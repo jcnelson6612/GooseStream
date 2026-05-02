@@ -348,7 +348,9 @@
         try {
             // Determine if we are running locally in Gemini or publicly on GitHub
             const isGeminiEnvironment = typeof __firebase_config !== 'undefined';
-            const finalConfig = isGeminiEnvironment ? JSON.parse(__firebase_config) : GITHUB_FIREBASE_CONFIG;
+            
+            // FIX: Look for 'firebaseConfig' instead of the old 'GITHUB_FIREBASE_CONFIG'
+            const finalConfig = isGeminiEnvironment ? JSON.parse(__firebase_config) : firebaseConfig;
             
             if (!isGeminiEnvironment && finalConfig.apiKey === "PASTE_API_KEY_HERE") {
                 console.warn("Using placeholder Firebase config. Database read/writes will fail on GitHub until config is added.");
