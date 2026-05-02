@@ -270,6 +270,19 @@
         const CLOUDINARY_CLOUD_NAME = "dxvjtqgka"; // e.g. "dxvjtqgka"
         const CLOUDINARY_UPLOAD_PRESET = "Voice Recording Upload Preset"; // Create an "unsigned" upload preset in Cloudinary settings
 
+        // --- IMPORTANT: FIREBASE CONFIG FOR GITHUB PAGES ---
+        // Paste your configuration from the Firebase Console here:
+        const firebaseConfig = {
+  apiKey: "AIzaSyCXNhY-HuAOJ3owKfxWZ79AMSs_qK1doog",
+  authDomain: "goose-stream.firebaseapp.com",
+  databaseURL: "https://goose-stream-default-rtdb.firebaseio.com",
+  projectId: "goose-stream",
+  storageBucket: "goose-stream.firebasestorage.app",
+  messagingSenderId: "487394686262",
+  appId: "1:487394686262:web:66af9198cc66c56a68af97"
+};
+
+
         const prompts = [
             "Ask a goose to take you to its leader..",
             "Hum a song you think a goose would enjoy.",
@@ -281,8 +294,10 @@
             "What did you dream about last night?"
         ];
 
-        let publicRecordings = []; // Will hold data from Firebase
+        let publicRecordings = []; 
         let userAuth = null;
+        let db = null;
+        let globalAppId = null;
         
         // Audio Recording State
         let mediaRecorder;
@@ -329,70 +344,77 @@
 
         let currentAmbientTrackIndex = -1;
 
-        // --- 2. FIREBASE SETUP ---
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        // --- 2. FIREBASE SETUP (Wrapped in try/catch to prevent page crashes) ---
+        try {
+            // Determine if we are running locally in Gemini or publicly on GitHub
+            const isGeminiEnvironment = typeof __firebase_config !== 'undefined';
+            const finalConfig = isGeminiEnvironment ? JSON.parse(__firebase_config) : GITHUB_FIREBASE_CONFIG;
+            
+            if (!isGeminiEnvironment && finalConfig.apiKey === "PASTE_API_KEY_HERE") {
+                console.warn("Using placeholder Firebase config. Database read/writes will fail on GitHub until config is added.");
+            }
 
-        // Initialize Authentication (Required before writing/reading)
-        const initAuth = async () => {
-            try {
-                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                    await signInWithCustomToken(auth, __initial_auth_token);
-                } else {
-                    await signInAnonymously(auth);
+            const app = initializeApp(finalConfig);
+            const auth = getAuth(app);
+            db = getFirestore(app);
+            globalAppId = isGeminiEnvironment ? __app_id : 'park-voices-app';
+
+            // Initialize Authentication 
+            const initAuth = async () => {
+                try {
+                    if (isGeminiEnvironment && typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+                } catch (error) {
+                    console.error("Auth failed:", error);
                 }
-            } catch (error) {
-                console.error("Auth failed:", error);
-            }
-        };
+            };
 
-        // Listen for Auth State & Fetch Recordings
-        onAuthStateChanged(auth, (user) => {
-            userAuth = user;
-            if (user) {
-                const recordingsRef = collection(db, 'artifacts', appId, 'public', 'data', 'park_voices');
-                
-                // Fetch the index of recordings (The Heatmap data)
-                onSnapshot(recordingsRef, (snapshot) => {
-                    publicRecordings = [];
-                    const hotspotLayer = document.getElementById('hotspot-layer');
-                    hotspotLayer.innerHTML = ''; // Clear old
-
-                    snapshot.forEach((doc) => {
-                        const data = doc.data();
-                        publicRecordings.push({ id: doc.id, ...data });
-                        
-                        // Render Heatmap Marker
-                        const percentOfDay = (data.timeOfDaySec / DAY_DURATION_SEC) * 100;
-                        const marker = document.createElement('div');
-                        marker.className = 'hotspot';
-                        marker.style.top = `${percentOfDay}%`;
-                        marker.id = `hotspot-${doc.id}`;
-                        hotspotLayer.appendChild(marker);
-                    });
+            // Listen for Auth State & Fetch Recordings
+            onAuthStateChanged(auth, (user) => {
+                userAuth = user;
+                if (user && db) {
+                    const recordingsRef = collection(db, 'artifacts', globalAppId, 'public', 'data', 'park_voices');
                     
-                    // Sort by time
-                    publicRecordings.sort((a, b) => a.timeOfDaySec - b.timeOfDaySec);
-                }, (error) => console.error("Firestore error:", error));
-            }
-        });
+                    onSnapshot(recordingsRef, (snapshot) => {
+                        publicRecordings = [];
+                        const hotspotLayer = document.getElementById('hotspot-layer');
+                        hotspotLayer.innerHTML = ''; 
 
-        initAuth();
+                        snapshot.forEach((doc) => {
+                            const data = doc.data();
+                            publicRecordings.push({ id: doc.id, ...data });
+                            
+                            const percentOfDay = (data.timeOfDaySec / DAY_DURATION_SEC) * 100;
+                            const marker = document.createElement('div');
+                            marker.className = 'hotspot';
+                            marker.style.top = `${percentOfDay}%`;
+                            marker.id = `hotspot-${doc.id}`;
+                            hotspotLayer.appendChild(marker);
+                        });
+                        
+                        publicRecordings.sort((a, b) => a.timeOfDaySec - b.timeOfDaySec);
+                    }, (error) => console.error("Firestore error:", error));
+                }
+            });
+
+            initAuth();
+        } catch (initError) {
+            console.error("Firebase failed to initialize. Did you paste your config?", initError);
+            // We catch the error so the script continues executing and bounds the functions to the buttons!
+        }
 
         // --- 3. UI ROUTING ---
         window.resetToLanding = () => {
             document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
             document.getElementById('screen-landing').classList.add('active');
             
-            // Cleanup states
             document.getElementById('ambient-player').pause();
             document.getElementById('voice-player').pause();
             if (listenAnimationId) cancelAnimationFrame(listenAnimationId);
 
-            // Reset UI Texts
             document.getElementById('landing-status').innerText = "";
             document.getElementById('record-status').innerText = "Max 30 seconds.";
             document.getElementById('record-status').style.color = "#94a3b8";
@@ -408,15 +430,14 @@
 
         // --- 4. RECORDING FLOW ---
         window.startRecordFlow = () => {
-            if (!userAuth) {
-                document.getElementById('landing-status').innerText = "Establishing connection... please try again in a moment.";
+            if (!userAuth || !db) {
+                document.getElementById('landing-status').innerText = "Database disconnected. Did you add your Firebase config to the code?";
                 return;
             }
             document.getElementById('landing-status').innerText = "";
             document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
             document.getElementById('screen-record').classList.add('active');
             
-            // Pick a random prompt
             const randomPrompt = prompts[Math.floor(Math.random() * prompts.length)];
             document.getElementById('fluxus-prompt').innerText = randomPrompt;
             document.getElementById('record-status').innerText = "Max 30 seconds.";
@@ -425,12 +446,10 @@
         window.toggleRecording = async () => {
             const btn = document.getElementById('record-btn');
             const status = document.getElementById('record-status');
-            status.style.color = "#94a3b8"; // Reset color
+            status.style.color = "#94a3b8"; 
 
             if (!isRecording) {
-                // START RECORDING
                 try {
-                    // Check if mediaDevices is accessible before calling
                     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
                         throw new Error("Microphone API not available.");
                     }
@@ -450,7 +469,6 @@
                         const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
                         await saveRecordingToCloud(audioBlob);
                         
-                        // Stop mic tracks
                         stream.getTracks().forEach(track => track.stop());
                     };
 
@@ -460,7 +478,6 @@
                     btn.classList.add('recording');
                     status.innerText = "Recording... Speak to the park.";
 
-                    // Hard stop at 30 seconds
                     recordTimeout = setTimeout(() => {
                         if(isRecording) window.toggleRecording();
                     }, 30000);
@@ -471,7 +488,6 @@
                     status.style.color = "var(--danger)";
                 }
             } else {
-                // STOP RECORDING
                 isRecording = false;
                 clearTimeout(recordTimeout);
                 mediaRecorder.stop();
@@ -482,24 +498,23 @@
 
         async function saveRecordingToCloud(audioBlob) {
             const prompt = document.getElementById('fluxus-prompt').innerText;
-            
-            // Calculate current time of day in seconds
             const now = new Date();
             const timeOfDaySec = (now.getHours() * 3600) + (now.getMinutes() * 60) + now.getSeconds();
 
             let audioUrl = "";
 
             try {
+                if (!db) throw new Error("Database not connected.");
+
                 // 1. UPLOAD TO CLOUDINARY
                 if (CLOUDINARY_CLOUD_NAME === "YOUR_CLOUD_NAME") {
-                    // Fallback for prototyping if Cloudinary keys aren't set up yet
                     console.warn("Cloudinary not set up. Using temporary local URL for this session.");
                     audioUrl = URL.createObjectURL(audioBlob);
                 } else {
                     const formData = new FormData();
                     formData.append('file', audioBlob);
                     formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
-                    formData.append('resource_type', 'video'); // Cloudinary treats audio as video
+                    formData.append('resource_type', 'video'); 
 
                     const uploadResponse = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/video/upload`, {
                         method: 'POST',
@@ -512,15 +527,14 @@
                 }
 
                 // 2. SAVE URL METADATA TO FIREBASE
-                const recordingsRef = collection(db, 'artifacts', appId, 'public', 'data', 'park_voices');
+                const recordingsRef = collection(db, 'artifacts', globalAppId, 'public', 'data', 'park_voices');
                 await addDoc(recordingsRef, {
                     prompt: prompt,
                     timeOfDaySec: timeOfDaySec,
-                    audioUrl: audioUrl, // Save the tiny URL instead of the giant Base64 string!
+                    audioUrl: audioUrl,
                     timestamp: Date.now()
                 });
                 
-                // Show Success Screen
                 document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
                 document.getElementById('screen-success').classList.add('active');
                 document.getElementById('record-btn').disabled = false;
@@ -540,11 +554,9 @@
             document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
             document.getElementById('screen-listen').classList.add('active');
 
-            // Jump to current real-world time of day on the scrollbar
             const now = new Date();
             const currentSec = (now.getHours() * 3600) + (now.getMinutes() * 60) + now.getSeconds();
             
-            // We wait 1 frame to ensure the browser has rendered the 500vh height before measuring
             requestAnimationFrame(() => {
                 const listenScreen = document.getElementById('screen-listen');
                 const maxScroll = listenScreen.scrollHeight - window.innerHeight;
@@ -553,10 +565,7 @@
                 targetScroll = window.scrollY;
                 currentScroll = window.scrollY;
 
-                // Start ambient audio mapped to current time
                 seekAmbientAudio(currentSec);
-
-                // Start animation loop
                 listenAnimationId = requestAnimationFrame(listenLoop);
             });
         };
@@ -568,13 +577,11 @@
             return `${h}:${m}:${s}`;
         }
 
-        // Detect user scrolling to handle manual seeking
         window.addEventListener('scroll', () => {
             if (document.getElementById('screen-listen').classList.contains('active')) {
                 targetScroll = window.scrollY;
                 isUserScrolling = true;
                 
-                // Mute ambient while scrolling fast to prevent stuttering
                 document.getElementById('ambient-player').volume = 0;
 
                 clearTimeout(window.scrollTimeout);
@@ -631,7 +638,6 @@
 
             ambientPlayer.currentTime = offsetInFile;
             
-            // Restore volume if we aren't currently overlapping a voice memo
             if (currentVoiceId === null) {
                 ambientPlayer.volume = 0.5;
             }
@@ -642,12 +648,10 @@
         function listenLoop() {
             if (!document.getElementById('screen-listen').classList.contains('active')) return;
 
-            // Smooth scroll LERP
             currentScroll += (targetScroll - currentScroll) * 0.1;
             
             const maxScroll = document.getElementById('screen-listen').scrollHeight - window.innerHeight;
             
-            // Protect against dividing by zero
             if (maxScroll <= 0) {
                 listenAnimationId = requestAnimationFrame(listenLoop);
                 return;
@@ -661,7 +665,6 @@
             document.getElementById('listen-clock').innerText = formatTime(virtualSeconds);
             document.getElementById('heatmap-progress').style.height = `${progress * 100}%`;
 
-            // Auto-scroll the page if ambient is playing naturally and user isn't overriding
             const ambientPlayer = document.getElementById('ambient-player');
             if (!ambientPlayer.paused && !isUserScrolling && currentAmbientTrackIndex !== -1) {
                 const track = audioSchedule[currentAmbientTrackIndex];
@@ -672,7 +675,6 @@
                 window.scrollTo(0, targetScroll);
             }
 
-            // Check for Hotspots (Voice Recordings)
             checkHotspots(virtualSeconds);
 
             listenAnimationId = requestAnimationFrame(listenLoop);
@@ -683,44 +685,36 @@
             const ambientPlayer = document.getElementById('ambient-player');
             const promptDisplay = document.getElementById('active-prompt-display');
             
-            // Find if we are currently "inside" the timeline window of a recording (e.g. 5 seconds after it was left)
             const activeRecording = publicRecordings.find(rec => {
                 return virtualSeconds >= rec.timeOfDaySec && virtualSeconds <= (rec.timeOfDaySec + 15);
             });
 
-            // Highlight markers visually
             document.querySelectorAll('.hotspot').forEach(el => el.classList.remove('active'));
 
             if (activeRecording) {
                 document.getElementById(`hotspot-${activeRecording.id}`)?.classList.add('active');
                 
-                // If we found a recording, and it's not currently playing, trigger it
                 if (currentVoiceId !== activeRecording.id) {
                     currentVoiceId = activeRecording.id;
                     
-                    // Dip ambient audio
                     ambientPlayer.volume = 0.1;
                     
-                    // Play voice using the URL stored in the database
                     voicePlayer.src = activeRecording.audioUrl || activeRecording.audioBase64; 
                     promptDisplay.innerText = `"${activeRecording.prompt}"`;
                     voicePlayer.play().catch(e => console.log("Playback failed:", e));
                 }
             } else {
-                // We are in dead space. Restore ambient.
                 if (currentVoiceId !== null) {
                     currentVoiceId = null;
                     promptDisplay.innerText = "";
                     voicePlayer.pause();
                     voicePlayer.currentTime = 0;
                     
-                    // Fade ambient back up
                     ambientPlayer.volume = 0.5;
                 }
             }
         }
 
-        // Seamlessly transition ambient audio to the next track when one ends
         document.getElementById('ambient-player').addEventListener('ended', () => {
             if (currentAmbientTrackIndex !== -1) {
                 const track = audioSchedule[currentAmbientTrackIndex];
